@@ -10556,6 +10556,8 @@ let pps = 0;
 
             let damageTick = 0;
             let tick = 0;
+            let serverTickMs = 111;
+            let lastServerTickAt = 0;
 
             let hits = [];
             let shoots = [];
@@ -10655,6 +10657,67 @@ let pps = 0;
 
             let spamPrePlacer = false;
             let prePlaceInterval;
+            const preplaceMinGuard = 3;
+            const preplaceMaxGuard = 7;
+            const preplaceSecondShotDelay = 4;
+
+            function markServerTick() {
+                const now = performance.now();
+
+                if (lastServerTickAt) {
+                    const diff = now - lastServerTickAt;
+
+                    if (diff > 80 && diff < 140) {
+                        serverTickMs = serverTickMs * 0.85 + diff * 0.15;
+                    }
+                }
+
+                lastServerTickAt = now;
+            }
+
+            function getPreplaceDelay(extra = 0) {
+                const now = performance.now();
+
+                const rtt = Math.min(
+                    window.pingTime || 40,
+                    averagePing || window.pingTime || 40
+                );
+
+                const minPing = minPingTime || rtt;
+                const avgPing = averagePing || rtt;
+                const jitter = Math.max(0, avgPing - minPing);
+
+                const guard = Math.max(preplaceMinGuard, Math.min(preplaceMaxGuard, preplaceMinGuard + jitter * 0.35));
+                const fireAt = lastServerTickAt + serverTickMs - rtt + guard + extra;
+
+                return Math.max(0, fireAt - now);
+            }
+
+            function firePreplaceQueue(queue) {
+                for (const object of queue) {
+                    if (packets + 5 > 119) break;
+
+                    io.send("D", getAttackDir());
+                    place(object.id, object.angle);
+                    placedAngles.push(object.angle);
+                }
+            }
+
+            function schedulePreplace(queue) {
+                if (!queue || !queue.length) return;
+
+                const delay = getPreplaceDelay(0);
+
+                setTimeout(() => {
+                    firePreplaceQueue(queue);
+                }, delay);
+
+                if (spamPrePlacer) {
+                    setTimeout(() => {
+                        firePreplaceQueue(queue);
+                    }, delay + preplaceSecondShotDelay);
+                }
+            }
 
             // BULLTICKS
             function canVelocitySpikeTick() {
@@ -12304,6 +12367,7 @@ let pps = 0;
             // UPDATE PLAYER DATA:
             function updatePlayers(data) {
                 tick++;
+                markServerTick();
 
 
 
@@ -13788,39 +13852,10 @@ let pps = 0;
                 });
 
                 // PRE PLACER
-                setTimeout(function () {
-                    for (let object of predictObjects) {
-                        if (!object.preplace) continue;
-                        setPlaceTick();
-                        getPrePlaceAngles(myPlayer.items[2], object.id, object.angle);
-                        getPrePlaceAngles(myPlayer.items[4] || 15, object.id, object.angle);
-                        io.send("D", getAttackDir());
-                    }
-                }, 1);
-
-                setTimeout(function () {
-                    for (let object of predictObjects) {
-                        if (!object.preplace) continue;
-                        if (packets + 5 > 119) break;
-
-                        place(object.id, object.angle);
-                        placedAngles.push(object.angle);
-                        io.send("D", getAttackDir());
-                    }
-                }, 111 - window.pingTime);
-
-                setTimeout(function () {
-                    if (spamPrePlacer) {
-                        for (let object of predictObjects) {
-                            if (!object.preplace) continue;
-                            if (packets + 5 > 119) break;
-
-                            place(object.id, object.angle);
-                            placedAngles.push(object.angle);
-                            io.send("D", getAttackDir());
-                        }
-                    }
-                }, 111 - minPingTime);
+                const preplaceQueue = predictObjects.filter((object) => object.preplace);
+                if (preplaceQueue.length) {
+                    schedulePreplace(preplaceQueue);
+                }
 
 
                 damagesByHits = [];
